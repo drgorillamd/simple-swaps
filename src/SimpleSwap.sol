@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity 0.8.6;
 
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/external/IWETH9.sol";
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import "interfaces/SwapInterfaces.sol";
+import "./interfaces/SwapInterfaces.sol";
 
 /**
     @notice
@@ -40,16 +39,16 @@ contract SimpleSwap {
         @param tokenOut the address of the token to receive
         @param pool the pool address
         @param amountIn the amount to swap - will be overriden by msg.value if non-0
-        @param minOut the minimum amount of tokenOut to receive
+        @param minAmountOut the minimum amount of tokenOut to receive
     */
     function swapUniV2(
         IERC20 tokenIn,
         IERC20 tokenOut,
         IUniswapV2Pair pool,
         uint256 amountIn,
-        uint256 minOut,
+        uint256 minAmountOut
     ) external payable {
-        (uint256 reserve0, uint256 reserve1, ) = getReserves();
+        (uint256 reserve0, uint256 reserve1, ) = pool.getReserves();
 
         bool tokenInIsZero = tokenIn < tokenOut;
 
@@ -60,11 +59,11 @@ contract SimpleSwap {
         uint256 amountInWithFee = amountIn * 997;
         uint256 numerator = amountInWithFee * reserveOut;
         uint256 denominator = reserveIn * 1000 + amountInWithFee;
-        amountOut = numerator / denominator;
+        uint256 amountOut = numerator / denominator;
 
-        if(minOut < amountOut) revert SimpleSwap_MaxSlippage();
+        if (minAmountOut < amountOut) revert SimpleSwap_MaxSlippage();
 
-        if(msg.value != 0) {
+        if (msg.value != 0) {
             amountIn = msg.value;
             weth.deposit{value: amountIn}();
             tokenIn = IERC20(weth);
@@ -81,54 +80,79 @@ contract SimpleSwap {
     }
 
     /**
-        @dev ETH is address(0)
+        @notice
+        Provide compatibility with 1-inch Mooniswap pools
 
-        @dev
-        needs approval is erc20
+        @dev ERC20 needs to approve this contract first
+
+        @param tokenIn the address of the token to swap
+        @param tokenOut the address of the token to receive
+        @param pool the pool address
+        @param amountIn the amount to swap, needs to be msg.value is ETH is swapped
+        @param minAmountOut the minimum amount of tokenOut to receive
     */
     function swapMooniswap(
         IERC20 tokenIn,
         IERC20 tokenOut,
         IMooniswap pool,
         uint256 amountIn,
-        uint256 minOut,
-        uint256 maxSlippage
+        uint256 minAmountOut
     ) external payable {
-        if (tokenIn == address(0)) exactIn = msg.value;
-        else {
+        if (msg.value != 0) {
+            amountIn = msg.value;
+            tokenIn = IERC20(address(0));
+        } else {
             tokenIn.transferFrom(msg.sender, address(this), amountIn);
             tokenIn.approve(address(pool), amountIn);
         }
 
-        uint256 amountOut = pool.swap{value: msg.value}(
+        uint256 amountOut = pool.swap{value: amountIn}(
             tokenIn,
             tokenOut,
             amountIn,
-            minOut,
+            minAmountOut,
             address(msg.sender)
         );
 
         tokenOut.transfer(msg.sender, amountOut);
     }
 
+    /**
+        @notice
+        Provide compatibility with Curve stableswap pools
+
+        @dev ERC20 needs to approve this contract first
+
+        @param tokenIn the address of the token to swap
+        @param tokenOut the address of the token to receive
+        @param pool the pool address
+        @param amountIn the amount to swap, needs to be msg.value is ETH is swapped
+        @param minAmountOut the minimum amount of tokenOut to receive
+    */
     function swapCurve(
         IERC20 tokenIn,
         IERC20 tokenOut,
-        ICurve curvePool,
+        ICurve pool,
         uint256 amountIn,
         uint256 minAmountOut
     ) external payable {
-        if (msg.value != 0)
-            tokenIn = 0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee;
-        else {
+        if (msg.value != 0) {
+            tokenIn = IERC20(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
+            amountIn = msg.value;
+        } else {
             tokenIn.transferFrom(msg.sender, address(this), amountIn);
-            tokenIn.approve(address(curvePool), amountIn);
+            tokenIn.approve(address(pool), amountIn);
         }
 
-        int128 i = curvePool.coins(0) == tokenIn ? 0 : 1;
-        int128 j = i == 1 ? 0 : 1;
+        int128 i = pool.coins(0) == address(tokenIn) ? int128(0) : int128(1);
+        int128 j = i == 1 ? int128(0) : int128(1);
 
-        uint256 amountOut = curvePool.exchange{value: msg.value}(i, j, amountIn, minAmountOut);
+        uint256 amountOut = pool.exchange{value: amountIn}(
+            i,
+            j,
+            amountIn,
+            minAmountOut
+        );
 
         tokenOut.transfer(msg.sender, amountOut);
     }
